@@ -29,6 +29,8 @@ const props = defineProps({
   active: { type: Boolean, default: false },
 })
 
+const emit = defineEmits(['gesture'])
+
 const AndroidMotionEventAction = { Down: 0, Up: 1, Move: 2 }
 
 const canvasRef = ref(null)
@@ -117,18 +119,28 @@ function handleDisconnect() {
   })
 }
 
-// 좌표 매핑: canvas 표시 영역 비율 → 현재 비디오 픽셀
-function toVideoCoords(e) {
+// 포인터 위치를 canvas 표시영역 비율(0~1)로 환산
+function toFraction(e) {
   const rect = canvasRef.value.getBoundingClientRect()
-  const { width, height } = videoSize.value
-  const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-  const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height))
   return {
-    pointerX: Math.round(x * width),
-    pointerY: Math.round(y * height),
+    fx: Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width)),
+    fy: Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height)),
+  }
+}
+
+// 브로드캐스트 진입점: 분수좌표를 이 기기의 현재 비디오 픽셀로 정규화해 주입.
+// (그룹 컨트롤의 이기종 해상도 정규화 — 각 타일이 자기 videoSize로 매핑)
+function injectAt(fx, fy, action, pressure) {
+  if (!sessionId || !videoSize.value.width) return
+  const { width, height } = videoSize.value
+  window.$preload.grid.injectTouch(sessionId, {
+    action,
+    pressure,
+    pointerX: Math.round(fx * width),
+    pointerY: Math.round(fy * height),
     videoWidth: width,
     videoHeight: height,
-  }
+  })
 }
 
 let pointerDown = false
@@ -137,30 +149,21 @@ function onPointerDown(e) {
   if (!sessionId || !videoSize.value.width) return
   pointerDown = true
   canvasRef.value.setPointerCapture(e.pointerId)
-  window.$preload.grid.injectTouch(sessionId, {
-    action: AndroidMotionEventAction.Down,
-    pressure: 1,
-    ...toVideoCoords(e),
-  })
+  const { fx, fy } = toFraction(e)
+  emit('gesture', { deviceId: props.device.id, fx, fy, action: AndroidMotionEventAction.Down, pressure: 1 })
 }
 
 function onPointerMove(e) {
   if (!pointerDown || !sessionId) return
-  window.$preload.grid.injectTouch(sessionId, {
-    action: AndroidMotionEventAction.Move,
-    pressure: 1,
-    ...toVideoCoords(e),
-  })
+  const { fx, fy } = toFraction(e)
+  emit('gesture', { deviceId: props.device.id, fx, fy, action: AndroidMotionEventAction.Move, pressure: 1 })
 }
 
 function onPointerUp(e) {
   if (!pointerDown || !sessionId) return
   pointerDown = false
-  window.$preload.grid.injectTouch(sessionId, {
-    action: AndroidMotionEventAction.Up,
-    pressure: 0,
-    ...toVideoCoords(e),
-  })
+  const { fx, fy } = toFraction(e)
+  emit('gesture', { deviceId: props.device.id, fx, fy, action: AndroidMotionEventAction.Up, pressure: 0 })
 }
 
 watch(() => props.active, (active) => {
@@ -176,7 +179,13 @@ onBeforeUnmount(() => {
   stop()
 })
 
-defineExpose({ start, stop })
+async function wake() {
+  if (sessionId) {
+    try { await window.$preload.grid.backOrScreenOn(sessionId) } catch {}
+  }
+}
+
+defineExpose({ start, stop, injectAt, wake, deviceId: props.device.id })
 </script>
 
 <style lang="postcss" scoped>

@@ -87,7 +87,7 @@ export async function startSession(serial, callbacks = {}) {
   const video = await scrcpy.videoStream
 
   const id = String(nextId++)
-  const session = { id, serial, adb, scrcpy, video, stopped: false }
+  const session = { id, serial, adb, scrcpy, video, stopped: false, packetCount: 0, injectCount: 0 }
   sessions.set(id, session)
 
   // 읽기 루프: onPacket이 반환하는 Promise를 await → backpressure 유지
@@ -97,6 +97,7 @@ export async function startSession(serial, callbacks = {}) {
       while (true) {
         const { done, value } = await reader.read()
         if (done || session.stopped) break
+        session.packetCount++
         const packet = { type: value.type, keyframe: value.keyframe, data: value.data }
         if (value.pts !== undefined) packet.pts = value.pts // bigint는 브릿지를 그대로 통과(Phase 0 실증)
         await onPacket?.(packet)
@@ -123,9 +124,20 @@ export async function startSession(serial, callbacks = {}) {
   }
 }
 
+export function getStats() {
+  return [...sessions.values()].map(s => ({
+    id: s.id,
+    serial: s.serial,
+    packetCount: s.packetCount,
+    injectCount: s.injectCount,
+    stopped: s.stopped,
+  }))
+}
+
 export async function injectTouch(id, msg) {
   const s = sessions.get(id)
   if (!s || s.stopped) return
+  s.injectCount++
   await s.scrcpy.controller.injectTouch({
     action: msg.action,
     pointerId: ScrcpyPointerId.Finger,
