@@ -1,5 +1,5 @@
 <template>
-  <div class="grid-view absolute inset-0 flex flex-col">
+  <div class="grid-view h-full flex flex-col overflow-hidden">
     <div v-if="devices.length" class="grid-toolbar flex-none flex items-center gap-3 px-2 py-1">
       <el-switch
         v-model="syncInput"
