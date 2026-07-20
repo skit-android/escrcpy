@@ -18,6 +18,13 @@
   },
   "dependencies": {
     "@lydell/node-pty": "1.2.0-beta.3",
+    "@yume-chan/adb": "2.6.0",
+    "@yume-chan/adb-scrcpy": "2.3.2",
+    "@yume-chan/adb-server-node-tcp": "2.5.2",
+    "@yume-chan/fetch-scrcpy-server": "1.0.0",
+    "@yume-chan/scrcpy": "2.3.0",
+    "@yume-chan/scrcpy-decoder-webcodecs": "2.5.3",
+    "@yume-chan/stream-extra": "^2.6.1",
     "i18next-fs-backend": "2.6.1",
     "sharp": "*"
   },
