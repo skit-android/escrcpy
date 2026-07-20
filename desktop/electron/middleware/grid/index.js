@@ -1,7 +1,6 @@
 import { electronAPI } from '@electron-toolkit/preload'
 import {
   backOrScreenOn,
-  getStats,
   injectKey,
   injectScroll,
   injectTouch,
@@ -23,5 +22,4 @@ export default {
   injectScroll,
   injectKey,
   backOrScreenOn,
-  getStats,
 }

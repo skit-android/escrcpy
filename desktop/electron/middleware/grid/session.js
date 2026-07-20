@@ -117,7 +117,7 @@ export async function startSession(serial, callbacks = {}) {
   const video = await scrcpy.videoStream
 
   const id = String(nextId++)
-  const session = { id, serial, adb, scrcpy, video, stopped: false, packetCount: 0, injectCount: 0 }
+  const session = { id, serial, adb, scrcpy, video, stopped: false }
   sessions.set(id, session)
 
   ;(async () => {
@@ -128,7 +128,6 @@ export async function startSession(serial, callbacks = {}) {
         if (done || session.stopped) {
           break
         }
-        session.packetCount++
         // `pts` is a bigint; it survives the contextBridge unchanged.
         const packet = { type: value.type, keyframe: value.keyframe, data: value.data }
         if (value.pts !== undefined) {
@@ -161,22 +160,11 @@ export async function startSession(serial, callbacks = {}) {
   }
 }
 
-export function getStats() {
-  return [...sessions.values()].map(session => ({
-    id: session.id,
-    serial: session.serial,
-    packetCount: session.packetCount,
-    injectCount: session.injectCount,
-    stopped: session.stopped,
-  }))
-}
-
 export async function injectTouch(id, message) {
   const session = sessions.get(id)
   if (!session || session.stopped) {
     return
   }
-  session.injectCount++
   await session.scrcpy.controller.injectTouch({
     action: message.action,
     pointerId: ScrcpyPointerId.Finger,
@@ -224,7 +212,6 @@ export async function injectKey(id, keyCode) {
   if (!session || session.stopped) {
     return
   }
-  session.injectCount++
   await session.scrcpy.controller.injectKeyCode({ action: 0, keyCode, repeat: 0, metaState: 0 })
   await session.scrcpy.controller.injectKeyCode({ action: 1, keyCode, repeat: 0, metaState: 0 })
 }
