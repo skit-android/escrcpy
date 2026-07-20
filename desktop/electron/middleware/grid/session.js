@@ -10,60 +10,90 @@ import {
 } from '@yume-chan/scrcpy'
 import { ReadableStream, WritableStream } from '@yume-chan/stream-extra'
 
-// 번들된 scrcpy 3.3.4 서버. ya-webadb 클라이언트(≤3.3.3 프로토콜)와 version 오버라이드로 매칭.
+// The grid renders device screens in-app by decoding the scrcpy video stream
+// with WebCodecs, so it talks to the device through Tango (ya-webadb) rather
+// than the external `scrcpy` binary used by the mirror feature.
+//
+// Tango's scrcpy client speaks the 3.3.x server protocol, so the grid ships its
+// own server binary instead of reusing the bundled `scrcpy` binary (4.x). The
+// client version is overridden to match the shipped server exactly.
 const SERVER_BIN = extraResolve('common/grid/server.bin')
 const SERVER_VERSION = '3.3.4'
 
-// Phase 0 발견(G0.6): adb 서버 단절 시 라이브러리 내부 read 체인이 rejection을 던진다.
-// transport.disconnected는 신뢰할 수 없으므로 스트림 read 에러/종료를 단절 신호로 쓰고,
-// 프로세스 전역 가드로 크래시를 막는다.
+// Video encoding defaults tuned for showing many devices at once: a smaller
+// frame and bitrate than single-window mirroring keeps decode cost low.
+const MAX_SIZE = 1024
+const VIDEO_BIT_RATE = 4_000_000
+const MAX_FPS = 60
+
+const sessions = new Map()
+let nextId = 1
+let client = null
 let guardsInstalled = false
+
+// Tango does not surface a device disconnect through a resolvable promise; when
+// the ADB server dies or a device unplugs, a floating read in its internals
+// rejects with `ExactReadableEndedError`. Swallow only that class while grid
+// sessions are live (each session recovers via its own `onExit`); let every
+// other rejection through so unrelated bugs stay loud.
 function installGlobalGuards() {
-  if (guardsInstalled) return
+  if (guardsInstalled) {
+    return
+  }
   guardsInstalled = true
   process.on('unhandledRejection', (reason) => {
     const name = reason?.constructor?.name || ''
-    if (name === 'ExactReadableEndedError' || name === 'AdbServerConnectionError') {
-      // 세션 단절로 인한 알려진 rejection — 삼킨다(세션별 onExit이 복구 담당)
+    const isSessionDrop = name === 'ExactReadableEndedError' || name === 'AdbServerConnectionError'
+    if (isSessionDrop && sessions.size > 0) {
       return
     }
-    console.warn('grid.unhandledRejection', reason?.message || reason)
+    console.error('grid.unhandledRejection', reason)
   })
 }
 
-let client = null
+// Reuse a single connection to the running ADB server. Honours the standard
+// `ANDROID_ADB_SERVER_ADDRESS` / `ANDROID_ADB_SERVER_PORT` overrides so the grid
+// targets the same server as the rest of the app.
 function getClient() {
   if (!client) {
     client = new AdbServerClient(
-      new AdbServerNodeTcpConnector({ host: '127.0.0.1', port: 5037 }),
+      new AdbServerNodeTcpConnector({
+        host: process.env.ANDROID_ADB_SERVER_ADDRESS || '127.0.0.1',
+        port: Number(process.env.ANDROID_ADB_SERVER_PORT) || 5037,
+      }),
     )
   }
   return client
 }
 
-const sessions = new Map()
-let nextId = 1
-
 /**
- * 단일 기기의 scrcpy 세션 기동. onPacket은 contextBridge를 건너는 콜백.
- * onPacket은 Promise를 반환할 수 있고, 읽기 루프가 이를 await하여 backpressure를 유지한다.
+ * Start a scrcpy video session for a single device.
+ *
+ * `onPacket` crosses the contextBridge to the renderer's decoder. It may return
+ * a promise; the read loop awaits it so decode back-pressure reaches the video
+ * stream and the packet queue cannot grow unbounded. `onExit` fires once when
+ * the stream ends or errors (the caller owns reconnection).
+ *
+ * @returns {Promise<{id: string, serial: string, width: number, height: number, codec: number, deviceName: string}>}
  */
 export async function startSession(serial, callbacks = {}) {
   installGlobalGuards()
-  const { onPacket, onSizeChanged, onExit } = callbacks
+  const { onPacket, onExit } = callbacks
 
   const adb = await getClient().createAdb({ serial })
   const server = await fs.readFile(SERVER_BIN)
   await AdbScrcpyClient.pushServer(
     adb,
     new ReadableStream({
-      start(c) {
-        c.enqueue(new Uint8Array(server))
-        c.close()
+      start(controller) {
+        controller.enqueue(new Uint8Array(server))
+        controller.close()
       },
     }),
   )
 
+  // Throws `AdbScrcpyExitedError` (with the server's stderr in `.output`) if the
+  // server exits early; the caller surfaces it.
   const scrcpy = await AdbScrcpyClient.start(
     adb,
     DefaultServerPath,
@@ -73,9 +103,9 @@ export async function startSession(serial, callbacks = {}) {
         audio: false,
         control: true,
         videoCodec: 'h264',
-        maxSize: 1024,
-        videoBitRate: 4_000_000,
-        maxFps: 60,
+        maxSize: MAX_SIZE,
+        videoBitRate: VIDEO_BIT_RATE,
+        maxFps: MAX_FPS,
         clipboardAutosync: false,
         scid: ScrcpyInstanceId.random(),
       },
@@ -90,27 +120,34 @@ export async function startSession(serial, callbacks = {}) {
   const session = { id, serial, adb, scrcpy, video, stopped: false, packetCount: 0, injectCount: 0 }
   sessions.set(id, session)
 
-  // 읽기 루프: onPacket이 반환하는 Promise를 await → backpressure 유지
   ;(async () => {
     const reader = video.stream.getReader()
     try {
       while (true) {
         const { done, value } = await reader.read()
-        if (done || session.stopped) break
+        if (done || session.stopped) {
+          break
+        }
         session.packetCount++
+        // `pts` is a bigint; it survives the contextBridge unchanged.
         const packet = { type: value.type, keyframe: value.keyframe, data: value.data }
-        if (value.pts !== undefined) packet.pts = value.pts // bigint는 브릿지를 그대로 통과(Phase 0 실증)
+        if (value.pts !== undefined) {
+          packet.pts = value.pts
+        }
         await onPacket?.(packet)
       }
     }
     catch (error) {
+      // A read error is the disconnect signal; the view schedules a reconnect.
       if (!session.stopped) {
-        // 스트림 read 에러 = 단절 신호(G0.6). 세션 정리 후 상위에 통지 → 재기동은 뷰가 담당.
         onExit?.(String(error?.message || error))
       }
     }
     finally {
-      try { reader.releaseLock() } catch {}
+      try {
+        reader.releaseLock()
+      }
+      catch {}
     }
   })()
 
@@ -125,62 +162,90 @@ export async function startSession(serial, callbacks = {}) {
 }
 
 export function getStats() {
-  return [...sessions.values()].map(s => ({
-    id: s.id,
-    serial: s.serial,
-    packetCount: s.packetCount,
-    injectCount: s.injectCount,
-    stopped: s.stopped,
+  return [...sessions.values()].map(session => ({
+    id: session.id,
+    serial: session.serial,
+    packetCount: session.packetCount,
+    injectCount: session.injectCount,
+    stopped: session.stopped,
   }))
 }
 
-export async function injectTouch(id, msg) {
-  const s = sessions.get(id)
-  if (!s || s.stopped) return
-  s.injectCount++
-  await s.scrcpy.controller.injectTouch({
-    action: msg.action,
+export async function injectTouch(id, message) {
+  const session = sessions.get(id)
+  if (!session || session.stopped) {
+    return
+  }
+  session.injectCount++
+  await session.scrcpy.controller.injectTouch({
+    action: message.action,
     pointerId: ScrcpyPointerId.Finger,
-    pointerX: msg.pointerX,
-    pointerY: msg.pointerY,
-    videoWidth: msg.videoWidth,
-    videoHeight: msg.videoHeight,
-    pressure: msg.pressure ?? 1,
+    pointerX: message.pointerX,
+    pointerY: message.pointerY,
+    videoWidth: message.videoWidth,
+    videoHeight: message.videoHeight,
+    pressure: message.pressure ?? 1,
     actionButton: 1,
-    buttons: msg.buttons ?? (msg.action === 1 ? 0 : 1),
+    buttons: message.buttons ?? (message.action === 1 ? 0 : 1),
   })
 }
 
-export async function injectScroll(id, msg) {
-  const s = sessions.get(id)
-  if (!s || s.stopped) return
-  await s.scrcpy.controller.injectScroll({
-    pointerX: msg.pointerX,
-    pointerY: msg.pointerY,
-    videoWidth: msg.videoWidth,
-    videoHeight: msg.videoHeight,
-    scrollX: msg.scrollX ?? 0,
-    scrollY: msg.scrollY ?? 0,
+export async function injectScroll(id, message) {
+  const session = sessions.get(id)
+  if (!session || session.stopped) {
+    return
+  }
+  await session.scrcpy.controller.injectScroll({
+    pointerX: message.pointerX,
+    pointerY: message.pointerY,
+    videoWidth: message.videoWidth,
+    videoHeight: message.videoHeight,
+    scrollX: message.scrollX ?? 0,
+    scrollY: message.scrollY ?? 0,
     buttons: 0,
   })
 }
 
 export async function backOrScreenOn(id) {
-  const s = sessions.get(id)
-  if (!s || s.stopped) return
-  await s.scrcpy.controller.backOrScreenOn(0) // Down
+  const session = sessions.get(id)
+  if (!session || session.stopped) {
+    return
+  }
+  // Send a complete key event: wakes the screen, or acts as Back when already on.
+  await session.scrcpy.controller.backOrScreenOn(0)
+  await session.scrcpy.controller.backOrScreenOn(1)
+}
+
+// Inject a system key (android.view.KeyEvent code) as a full Down/Up press.
+// Unlike a coordinate tap, this reaches the same action on every device
+// regardless of its navigation style (gesture vs. buttons).
+export async function injectKey(id, keyCode) {
+  const session = sessions.get(id)
+  if (!session || session.stopped) {
+    return
+  }
+  session.injectCount++
+  await session.scrcpy.controller.injectKeyCode({ action: 0, keyCode, repeat: 0, metaState: 0 })
+  await session.scrcpy.controller.injectKeyCode({ action: 1, keyCode, repeat: 0, metaState: 0 })
 }
 
 export async function stopSession(id) {
-  const s = sessions.get(id)
-  if (!s) return
-  s.stopped = true
+  const session = sessions.get(id)
+  if (!session) {
+    return
+  }
+  session.stopped = true
   sessions.delete(id)
-  try { await s.scrcpy.close() } catch {}
-  try { await s.adb.close() } catch {}
+  try {
+    await session.scrcpy.close()
+  }
+  catch {}
+  try {
+    await session.adb.close()
+  }
+  catch {}
 }
 
 export async function stopAll() {
-  const ids = [...sessions.keys()]
-  await Promise.all(ids.map(id => stopSession(id)))
+  await Promise.all([...sessions.keys()].map(id => stopSession(id)))
 }

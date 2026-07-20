@@ -2,6 +2,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 import {
   backOrScreenOn,
   getStats,
+  injectKey,
   injectScroll,
   injectTouch,
   startSession,
@@ -9,7 +10,7 @@ import {
   stopSession,
 } from './session.js'
 
-// 앱 종료 시 모든 grid 세션 정리(기존 adb 미들웨어의 quit-before 패턴과 동일)
+// Tear down every session on quit, matching the adb/scrcpy middlewares.
 electronAPI.ipcRenderer.on('quit-before', () => {
   stopAll()
 })
@@ -20,6 +21,7 @@ export default {
   stopAll,
   injectTouch,
   injectScroll,
+  injectKey,
   backOrScreenOn,
   getStats,
 }

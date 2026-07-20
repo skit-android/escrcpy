@@ -9,6 +9,11 @@
       />
       <span v-if="syncInput" class="text-xs text-warning">{{ $t('grid.sync.hint') }}</span>
       <div class="flex-1" />
+      <el-button-group>
+        <el-button size="small" icon="Back" :title="$t('grid.nav.back')" @click="broadcastKey(KEY_BACK)" />
+        <el-button size="small" icon="HomeFilled" :title="$t('grid.nav.home')" @click="broadcastKey(KEY_HOME)" />
+        <el-button size="small" icon="Grid" :title="$t('grid.nav.recents')" @click="broadcastKey(KEY_APP_SWITCH)" />
+      </el-button-group>
       <el-button size="small" @click="wakeAll">
         {{ $t('grid.wakeAll') }}
       </el-button>
@@ -29,6 +34,7 @@
         :device="device"
         :active="active"
         @gesture="onGesture"
+        @scroll="onScroll"
       />
     </div>
   </div>
@@ -39,27 +45,53 @@ import GridTile from './components/grid-tile.vue'
 
 const deviceStore = useDeviceStore()
 
+// android.view.KeyEvent codes for the toolbar navigation buttons.
+const KEY_HOME = 3
+const KEY_BACK = 4
+const KEY_APP_SWITCH = 187
+
 const active = ref(false)
 const devices = ref([])
 const syncInput = ref(false)
 
-// 타일 인스턴스 참조(브로드캐스트/깨우기용)
+// Tile component instances, keyed by device id (for input broadcast / wake).
 const tileRefs = new Map()
 function registerTile(id, el) {
-  if (el) tileRefs.set(id, el)
-  else tileRefs.delete(id)
-}
-
-// 그룹 컨트롤: sync 켜지면 한 제스처를 전 기기에 분수좌표로 브로드캐스트
-// (각 타일이 자기 해상도로 정규화 → 이기종 기기 동시 조작)
-function onGesture(g) {
-  if (syncInput.value) {
-    for (const tile of tileRefs.values()) {
-      tile.injectAt?.(g.fx, g.fy, g.action, g.pressure)
-    }
+  if (el) {
+    tileRefs.set(id, el)
   }
   else {
-    tileRefs.get(g.deviceId)?.injectAt?.(g.fx, g.fy, g.action, g.pressure)
+    tileRefs.delete(id)
+  }
+}
+
+// Group control: with sync on, a gesture on one tile is broadcast to every
+// device as a fraction; each tile maps it to its own resolution, so devices of
+// different sizes stay in step. With sync off, only the touched device reacts.
+function onGesture(gesture) {
+  const targets = syncInput.value
+    ? [...tileRefs.values()]
+    : [tileRefs.get(gesture.deviceId)]
+  for (const tile of targets) {
+    tile?.injectAt?.(gesture.fx, gesture.fy, gesture.action, gesture.pressure)
+  }
+}
+
+function onScroll(gesture) {
+  const targets = syncInput.value
+    ? [...tileRefs.values()]
+    : [tileRefs.get(gesture.deviceId)]
+  for (const tile of targets) {
+    tile?.scrollAt?.(gesture.fx, gesture.fy, gesture.deltaY)
+  }
+}
+
+// Toolbar navigation keys are grid-wide: send the key to every device at once,
+// which is the correct way to drive Back/Home/Recents across devices whose
+// navigation styles (gesture vs. buttons) put them in different places.
+function broadcastKey(keyCode) {
+  for (const tile of tileRefs.values()) {
+    tile.pressKey?.(keyCode)
   }
 }
 
@@ -69,6 +101,7 @@ function wakeAll() {
   }
 }
 
+// Only devices that are online and streamable (exclude offline/unauthorized).
 function connectedOnly(list) {
   return list.filter(item => item.type === 'device')
 }
@@ -85,10 +118,10 @@ function onAdbWatch(action) {
 }
 
 const gridStyle = computed(() => {
-  const n = devices.value.length
-  const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3
+  const count = devices.value.length
+  const columns = count <= 1 ? 1 : count <= 4 ? 2 : 3
   return {
-    gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+    gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
     gridAutoRows: '1fr',
   }
 })
@@ -101,6 +134,8 @@ onMounted(async () => {
   unAdbWatch = await window.$preload.adb.watch(onAdbWatch)
 })
 
+// The layout keeps this view alive across tab switches, so drive streaming from
+// activation: resume on re-entry, stop when hidden to free CPU and bandwidth.
 onActivated(async () => {
   await refreshDevices()
   active.value = true
