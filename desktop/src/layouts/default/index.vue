@@ -46,6 +46,10 @@ const tabsModel = [
     value: '/device',
   },
   {
+    label: 'grid.name',
+    value: '/grid',
+  },
+  {
     label: 'preferences.name',
     value: '/preference',
   },

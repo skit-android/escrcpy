@@ -547,6 +547,8 @@
   "device.control.volume.name": "الصوت",
   "device.isCharging": "وضع الشحن",
   "device.list": "الأجهزة",
+  "grid.name": "شبكة",
+  "grid.empty": "لا توجد أجهزة متصلة",
   "device.list.empty": "لم يتم اكتشاف أي أجهزة",
   "device.log.name": "السجلات",
   "device.mirror.start": "اتصال",

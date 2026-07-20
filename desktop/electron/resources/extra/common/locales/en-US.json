@@ -547,6 +547,8 @@
   "device.control.volume.name": "Volume",
   "device.isCharging": "Charging Status",
   "device.list": "Devices",
+  "grid.name": "Grid",
+  "grid.empty": "No connected devices",
   "device.list.empty": "No devices detected",
   "device.log.name": "Logs",
   "device.mirror.start": "Connect",

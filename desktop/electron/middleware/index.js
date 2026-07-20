@@ -12,6 +12,7 @@ import payload from './payload/index.js'
 import store from '$electron/helpers/store/index.js'
 import i18n from '$electron/helpers/i18n/index.js'
 import adb from './adb/index.js'
+import grid from './grid/index.js'
 import gnirehtet from './gnirehtet/index.js'
 import scrcpy from './scrcpy/index.js'
 import search from './search/index.js'
@@ -30,6 +31,7 @@ export function createMiddleware() {
     store,
     i18n,
     adb,
+    grid,
     scrcpy,
     gnirehtet,
     search,

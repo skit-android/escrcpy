@@ -547,6 +547,8 @@
   "device.control.volume.name": "音量",
   "device.isCharging": "充電ステータス",
   "device.list": "デバイス",
+  "grid.name": "グリッド",
+  "grid.empty": "接続されたデバイスがありません",
   "device.list.empty": "デバイスがありません",
   "device.log.name": "ログ",
   "device.mirror.start": "接続",

@@ -15,6 +15,12 @@ import './helpers/debugger/main.js'
 import { app } from 'electron'
 import { createElectronApp } from '@escrcpy/electron-setup/main'
 
+// DEV 전용: 패키징 안 된 개발 실행에서 CDP 원격 디버깅 활성화(그리드 뷰 자동 검증용)
+if (!app.isPackaged) {
+  app.commandLine.appendSwitch('remote-debugging-port', process.env.GRID_DEBUG_PORT || '9222')
+  app.commandLine.appendSwitch('remote-allow-origins', '*')
+}
+
 import {
   clipboardPlugin,
   sandboxPlugin,

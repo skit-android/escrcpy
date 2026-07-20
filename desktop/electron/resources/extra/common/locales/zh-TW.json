@@ -547,6 +547,8 @@
   "device.control.volume.name": "音量控制",
   "device.isCharging": "充電狀態",
   "device.list": "裝置列表",
+  "grid.name": "網格",
+  "grid.empty": "沒有已連接的裝置",
   "device.list.empty": "未偵測到裝置",
   "device.log.name": "執行日誌",
   "device.mirror.start": "開始鏡像",

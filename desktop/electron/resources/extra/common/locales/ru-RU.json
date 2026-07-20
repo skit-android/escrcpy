@@ -547,6 +547,8 @@
   "device.control.volume.name": "Громкость",
   "device.isCharging": "Состояние зарядки",
   "device.list": "Устройства",
+  "grid.name": "Сетка",
+  "grid.empty": "Нет подключённых устройств",
   "device.list.empty": "Устройства не обнаружены",
   "device.log.name": "Логи",
   "device.mirror.start": "Подключиться",
