@@ -106,7 +106,7 @@ function onText(evt) {
     ? [...tileRefs.values()]
     : [tileRefs.get(evt.deviceId)]
   for (const tile of targets) {
-    tile?.injectText?.(evt.text)
+    tile?.applyTextDelta?.(evt.removeCount, evt.appendText)
   }
 }
 

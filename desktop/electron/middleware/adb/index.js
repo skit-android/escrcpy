@@ -535,21 +535,21 @@ export async function isInstalledAdbKeyboard(deviceId) {
 
 export async function installAdbKeyboard(deviceId) {
   try {
-    const installed = await isInstalledAdbKeyboard(deviceId)
+    let installed = await isInstalledAdbKeyboard(deviceId)
 
-    if (installed) {
-      return true
+    if (!installed) {
+      await install(deviceId, adbKeyboardApkPath)
+      installed = await isInstalledAdbKeyboard(deviceId)
     }
 
-    await install(deviceId, adbKeyboardApkPath)
-
-    const installedAfter = await isInstalledAdbKeyboard(deviceId)
-
-    if (installedAfter) {
+    // A freshly-installed IME isn't enabled by default, and `ime set` fails
+    // silently (no thrown error, just a message on stdout) against a
+    // disabled one - so this must run every time, not just after installing.
+    if (installed) {
       await deviceShell(deviceId, 'ime enable com.android.adbkeyboard/.AdbIME')
     }
 
-    return installedAfter
+    return installed
   }
   catch (error) {
     const message = `Failed to install AdbKeyboard on device ${deviceId}: ${error?.message || error}`

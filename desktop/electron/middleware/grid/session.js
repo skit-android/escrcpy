@@ -1,5 +1,5 @@
 import fs from 'node:fs/promises'
-import adb from '$electron/middleware/adb/index.js'
+import adbMiddleware from '$electron/middleware/adb/index.js'
 import { extraResolve } from '$electron/process/resources.js'
 import { AdbServerClient } from '@yume-chan/adb'
 import { AdbServerNodeTcpConnector } from '@yume-chan/adb-server-node-tcp'
@@ -107,11 +107,7 @@ export async function startSession(serial, callbacks = {}) {
         maxSize: MAX_SIZE,
         videoBitRate: VIDEO_BIT_RATE,
         maxFps: MAX_FPS,
-        // Must be on: the scrcpy client only constructs its clipboard-ack
-        // handler when this is true, and `injectText`'s non-ASCII fallback
-        // (setClipboard) throws without it. We never read the device->host
-        // clipboard stream this also enables, so nothing syncs back to the OS.
-        clipboardAutosync: true,
+        clipboardAutosync: false,
         scid: ScrcpyInstanceId.random(),
       },
       { version: SERVER_VERSION },
@@ -242,10 +238,65 @@ export async function injectKeyCode(id, message) {
 // dropped rather than typed.
 const PRINTABLE_ASCII = /^[\x20-\x7E]*$/
 
+const ADB_KEYBOARD_IME = 'com.android.adbkeyboard/.AdbIME'
+
+// Devices we've switched to AdbKeyboard this app run, mapped to their prior
+// default IME (so it can be restored on quit). Keyed by device serial, not
+// grid session id, so it survives the grid's own reconnects.
+const originalImeBySerial = new Map()
+
+// One-time-per-device setup for non-ASCII text: install AdbKeyboard (a
+// headless IME that types whatever text it's broadcast, unlike the server's
+// own key-event injection which can't represent non-Latin scripts) and make
+// it the active input method. Cheap no-op on every call after the first.
+async function ensureAdbKeyboardActive(serial) {
+  if (originalImeBySerial.has(serial)) {
+    return
+  }
+  const installed = await adbMiddleware.installAdbKeyboard(serial)
+  if (!installed) {
+    throw new Error(`AdbKeyboard is not available on device ${serial}`)
+  }
+  let previousIme = ''
+  try {
+    previousIme = (await adbMiddleware.deviceShell(serial, 'settings get secure default_input_method')).trim()
+  }
+  catch {}
+  await adbMiddleware.deviceShell(serial, `ime set ${ADB_KEYBOARD_IME}`)
+  // `ime set` doesn't throw on failure (e.g. against a disabled IME) - it
+  // just prints a message - so confirm the switch actually landed before
+  // caching it as done, or every future keystroke would silently go nowhere.
+  const active = (await adbMiddleware.deviceShell(serial, 'settings get secure default_input_method')).trim()
+  if (active !== ADB_KEYBOARD_IME) {
+    throw new Error(`Failed to activate AdbKeyboard on device ${serial} (still on ${active})`)
+  }
+  // Record even a blank/"null" previous IME (still a marker that we've
+  // switched this device), so we don't redo setup on every keystroke.
+  originalImeBySerial.set(serial, previousIme && previousIme !== ADB_KEYBOARD_IME ? previousIme : '')
+}
+
+// Give devices back their original keyboard so they aren't left with a
+// headless IME (no visible on-screen keyboard) after the app quits.
+async function restoreOriginalImes() {
+  const entries = [...originalImeBySerial.entries()]
+  originalImeBySerial.clear()
+  await Promise.all(entries.map(async ([serial, previousIme]) => {
+    if (!previousIme) {
+      return
+    }
+    try {
+      await adbMiddleware.deviceShell(serial, `ime set ${previousIme}`)
+    }
+    catch (error) {
+      console.warn('grid.restoreOriginalImes.error', serial, error?.message || error)
+    }
+  }))
+}
+
 // Inject composed/printable text (typed characters, IME output) in one shot.
-// Non-ASCII text is routed through the device clipboard + auto-paste instead
-// of key-event injection, since the server can't represent it as key events -
-// this is the same workaround scrcpy itself uses for non-Latin scripts.
+// Non-ASCII text can't be represented as key events by the bundled server, so
+// it's routed through AdbKeyboard's broadcast-to-IME mechanism instead - the
+// standard scrcpy-community workaround for typing non-Latin scripts.
 export async function injectText(id, text) {
   const session = sessions.get(id)
   if (!session || session.stopped) {
@@ -255,7 +306,9 @@ export async function injectText(id, text) {
     await session.scrcpy.controller.injectText(text)
     return
   }
-  await session.scrcpy.controller.setClipboard({ sequence: 0n, paste: true, content: text })
+  await ensureAdbKeyboardActive(session.serial)
+  const base64 = Buffer.from(text, 'utf8').toString('base64')
+  await adbMiddleware.deviceShell(session.serial, `am broadcast -a ADB_INPUT_B64 --es msg ${base64}`)
 }
 
 export async function stopSession(id) {
@@ -277,4 +330,5 @@ export async function stopSession(id) {
 
 export async function stopAll() {
   await Promise.all([...sessions.keys()].map(id => stopSession(id)))
+  await restoreOriginalImes()
 }

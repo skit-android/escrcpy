@@ -479,31 +479,83 @@ function onKeyUp(e) {
   emit('keycode', { deviceId: props.device.id, action: AndroidKeyEventAction.Up, keyCode, repeat: 0, metaState: metaStateFor(e) })
 }
 
-// Fires for normal typing and, on composition end, with the fully composed
-// text (Korean/Japanese/Chinese IME) - mid-composition events are skipped so
-// the candidate window isn't disturbed. The field is cleared after every
-// commit so it never accumulates stale text.
+function commonPrefixLength(a, b) {
+  const max = Math.min(a.length, b.length)
+  let i = 0
+  while (i < max && a[i] === b[i])
+    i++
+  return i
+}
+
+// Fires on every keystroke, including mid-composition (Korean/Japanese/Chinese
+// IME): composing a syllable doesn't just append characters, it repeatedly
+// replaces the in-progress one (e.g. "ㅇ" -> "아" -> "안" are one Hangul block
+// updating in place, not three appends). So instead of waiting for composition
+// to end - which can take a whole word, making input look like it "batches" -
+// this diffs against the last-sent text on every event: new characters are
+// typed, and any characters that changed underneath the cursor are backspaced
+// out first. That mirrors the composition preview on the device in real time.
+let lastSentText = ''
+
 function onTextInput(e) {
   const value = e.target.value
-  if (e.isComposing)
+  if (!sessionId) {
+    lastSentText = ''
+    e.target.value = ''
     return
-  e.target.value = ''
-  if (sessionId && value)
-    emit('text', { deviceId: props.device.id, text: value })
+  }
+  const prefixLength = commonPrefixLength(lastSentText, value)
+  const removeCount = lastSentText.length - prefixLength
+  const appendText = value.slice(prefixLength)
+  // Removal and insertion travel as one event, applied in order by the
+  // target tile: backspaces go over the scrcpy control socket while text
+  // goes over a separate adb-shell broadcast, so firing them as independent
+  // events gives no ordering guarantee between the two channels.
+  if (removeCount > 0 || appendText)
+    emit('text', { deviceId: props.device.id, removeCount, appendText })
+  lastSentText = value
+  // Composition finished (or this was plain, non-composing input): reset so
+  // the field doesn't grow unbounded and the next word starts from a clean diff.
+  if (!e.isComposing) {
+    e.target.value = ''
+    lastSentText = ''
+  }
 }
 
 function injectKeyCode(action, keyCode, repeat, metaState) {
   if (!sessionId)
-    return
-  window.$preload.grid.injectKeyCode(sessionId, { action, keyCode, repeat, metaState })
+    return Promise.resolve()
+  return window.$preload.grid.injectKeyCode(sessionId, { action, keyCode, repeat, metaState })
     .catch(error => console.warn('grid-tile.injectKeyCode.error', props.device.id, error?.message || error))
 }
 
 function injectText(text) {
   if (!sessionId)
-    return
-  window.$preload.grid.injectText(sessionId, text)
+    return Promise.resolve()
+  return window.$preload.grid.injectText(sessionId, text)
     .catch(error => console.warn('grid-tile.injectText.error', props.device.id, error?.message || error))
+}
+
+// Applies one composition-diff step in order: backspaces (fast, over the
+// scrcpy control socket) complete before the new text (slower, over an
+// adb-shell broadcast) is sent, so a mid-syllable correction can't have its
+// insertion race ahead of the removal it depends on.
+async function applyTextDeltaNow(removeCount, appendText) {
+  for (let i = 0; i < removeCount; i++) {
+    await injectKeyCode(AndroidKeyEventAction.Down, CODE_TO_ANDROID_KEYCODE.Backspace, 0, 0)
+    await injectKeyCode(AndroidKeyEventAction.Up, CODE_TO_ANDROID_KEYCODE.Backspace, 0, 0)
+  }
+  if (appendText)
+    await injectText(appendText)
+}
+
+// Typing faster than a round-trip completes would let two deltas race each
+// other the same way; chaining onto the previous call keeps every step in
+// the order the user typed it, regardless of how quickly they arrive.
+let textDeltaQueue = Promise.resolve()
+function applyTextDelta(removeCount, appendText) {
+  textDeltaQueue = textDeltaQueue.then(() => applyTextDeltaNow(removeCount, appendText))
+  return textDeltaQueue
 }
 
 watch(() => props.active, (active) => {
@@ -542,7 +594,7 @@ function pressKey(keyCode) {
   }
 }
 
-defineExpose({ start, stop, injectAt, scrollAt, wake, pressKey, injectKeyCode, injectText, deviceId: props.device.id })
+defineExpose({ start, stop, injectAt, scrollAt, wake, pressKey, applyTextDelta, injectKeyCode, injectText, deviceId: props.device.id })
 </script>
 
 <style lang="postcss" scoped>
