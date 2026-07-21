@@ -2,7 +2,9 @@ import { electronAPI } from '@electron-toolkit/preload'
 import {
   backOrScreenOn,
   injectKey,
+  injectKeyCode,
   injectScroll,
+  injectText,
   injectTouch,
   startSession,
   stopAll,
@@ -21,5 +23,7 @@ export default {
   injectTouch,
   injectScroll,
   injectKey,
+  injectKeyCode,
+  injectText,
   backOrScreenOn,
 }

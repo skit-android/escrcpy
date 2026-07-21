@@ -558,6 +558,7 @@
   "grid.nav.recents": "الأخيرة",
   "grid.status.connecting": "جارٍ الاتصال",
   "grid.status.error": "إعادة الاتصال",
+  "grid.reorder.hint": "اسحب لإعادة الترتيب",
   "device.list.empty": "لم يتم اكتشاف أي أجهزة",
   "device.log.name": "السجلات",
   "device.mirror.start": "اتصال",

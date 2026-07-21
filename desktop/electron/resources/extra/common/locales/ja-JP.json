@@ -558,6 +558,7 @@
   "grid.nav.recents": "履歴",
   "grid.status.connecting": "接続中",
   "grid.status.error": "再接続中",
+  "grid.reorder.hint": "ドラッグして並べ替え",
   "device.list.empty": "デバイスがありません",
   "device.log.name": "ログ",
   "device.mirror.start": "接続",

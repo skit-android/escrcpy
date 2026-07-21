@@ -558,6 +558,7 @@
   "grid.nav.recents": "最近任务",
   "grid.status.connecting": "连接中",
   "grid.status.error": "重连中",
+  "grid.reorder.hint": "拖动以调整顺序",
   "device.list.empty": "没有检测到设备",
   "device.log.name": "运行日志",
   "device.mirror.start": "开始镜像",

@@ -24,6 +24,7 @@
     </div>
     <div
       v-else
+      ref="containerRef"
       class="grid-tiles flex-1 min-h-0 grid gap-2 p-1"
       :style="gridStyle"
     >
@@ -35,6 +36,9 @@
         :active="active"
         @gesture="onGesture"
         @scroll="onScroll"
+        @keycode="onKeyCode"
+        @text="onText"
+        @reorder="onReorder"
       />
     </div>
   </div>
@@ -86,6 +90,26 @@ function onScroll(gesture) {
   }
 }
 
+// Keyboard input follows the same sync rule as touch: broadcast to every tile
+// when group control is on, otherwise only the tile that has keyboard focus.
+function onKeyCode(evt) {
+  const targets = syncInput.value
+    ? [...tileRefs.values()]
+    : [tileRefs.get(evt.deviceId)]
+  for (const tile of targets) {
+    tile?.injectKeyCode?.(evt.action, evt.keyCode, evt.repeat, evt.metaState)
+  }
+}
+
+function onText(evt) {
+  const targets = syncInput.value
+    ? [...tileRefs.values()]
+    : [tileRefs.get(evt.deviceId)]
+  for (const tile of targets) {
+    tile?.injectText?.(evt.text)
+  }
+}
+
 // Toolbar navigation keys are grid-wide: send the key to every device at once,
 // which is the correct way to drive Back/Home/Recents across devices whose
 // navigation styles (gesture vs. buttons) put them in different places.
@@ -106,9 +130,45 @@ function connectedOnly(list) {
   return list.filter(item => item.type === 'device')
 }
 
+// User-dragged tile order, persisted across restarts and applied on top of
+// deviceStore's default (status-based) order. Devices not yet in the saved
+// order - newly connected ones - keep their relative order and land at the end.
+function getSavedOrder() {
+  return window.$preload.store.get('grid')?.deviceOrder || []
+}
+
+function saveOrder(list) {
+  window.$preload.store.set(['grid', 'deviceOrder'], list.map(device => device.id))
+}
+
+function applyOrder(list) {
+  const order = getSavedOrder()
+  if (!order.length)
+    return list
+  const rank = new Map(order.map((id, index) => [id, index]))
+  const known = []
+  const unknown = []
+  for (const device of list)
+    (rank.has(device.id) ? known : unknown).push(device)
+  known.sort((a, b) => rank.get(a.id) - rank.get(b.id))
+  return [...known, ...unknown]
+}
+
 async function refreshDevices() {
   const list = await deviceStore.getList()
-  devices.value = connectedOnly(list)
+  devices.value = applyOrder(connectedOnly(list))
+}
+
+function onReorder({ fromId, toId }) {
+  const fromIndex = devices.value.findIndex(device => device.id === fromId)
+  const toIndex = devices.value.findIndex(device => device.id === toId)
+  if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex)
+    return
+  const next = [...devices.value]
+  const [moved] = next.splice(fromIndex, 1)
+  next.splice(toIndex, 0, moved)
+  devices.value = next
+  saveOrder(next)
 }
 
 function onAdbWatch(action) {
@@ -117,18 +177,64 @@ function onAdbWatch(action) {
   }
 }
 
+// Phone screens are portrait and much taller than wide, so a naive square-ish
+// grid (e.g. 2x2 for 4 devices) leaves most of each cell empty on the sides.
+// Pick the column count that maximizes total on-screen device area instead,
+// which for a wide window naturally lands on a single, more "horizontal" row.
+const DEVICE_ASPECT = 9 / 19.5 // typical portrait phone width/height
+const GRID_GAP = 8 // px, must match the `gap-2` class on .grid-tiles
+
+const containerRef = ref(null)
+const containerSize = ref({ width: 0, height: 0 })
+let resizeObserver = null
+
+function bestColumns(count, containerWidth, containerHeight) {
+  if (count <= 1)
+    return 1
+  if (!containerWidth || !containerHeight)
+    return 0
+
+  let bestCols = 1
+  let bestArea = 0
+  for (let cols = 1; cols <= count; cols++) {
+    const rows = Math.ceil(count / cols)
+    const cellWidth = (containerWidth - GRID_GAP * (cols - 1)) / cols
+    const cellHeight = (containerHeight - GRID_GAP * (rows - 1)) / rows
+    const tileWidth = Math.min(cellWidth, cellHeight * DEVICE_ASPECT)
+    const area = tileWidth * (tileWidth / DEVICE_ASPECT)
+    if (area > bestArea) {
+      bestArea = area
+      bestCols = cols
+    }
+  }
+  return bestCols
+}
+
 const gridStyle = computed(() => {
   const count = devices.value.length
-  const columns = count <= 1 ? 1 : count <= 4 ? 2 : 3
+  const columns = bestColumns(count, containerSize.value.width, containerSize.value.height)
+    || (count <= 4 ? 2 : 3)
   return {
     gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
     gridAutoRows: '1fr',
   }
 })
 
+watch(containerRef, (el) => {
+  if (el)
+    resizeObserver?.observe(el)
+})
+
 let unAdbWatch = null
 
 onMounted(async () => {
+  resizeObserver = new ResizeObserver((entries) => {
+    const { width, height } = entries[0].contentRect
+    containerSize.value = { width, height }
+  })
+  if (containerRef.value)
+    resizeObserver.observe(containerRef.value)
+
   await refreshDevices()
   active.value = true
   unAdbWatch = await window.$preload.adb.watch(onAdbWatch)
@@ -148,6 +254,8 @@ onDeactivated(() => {
 onBeforeUnmount(() => {
   active.value = false
   unAdbWatch?.()
+  resizeObserver?.disconnect()
+  resizeObserver = null
 })
 </script>
 

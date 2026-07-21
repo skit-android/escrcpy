@@ -558,6 +558,7 @@
   "grid.nav.recents": "Recents",
   "grid.status.connecting": "Connecting",
   "grid.status.error": "Reconnecting",
+  "grid.reorder.hint": "Drag to reorder",
   "device.list.empty": "No devices detected",
   "device.log.name": "Logs",
   "device.mirror.start": "Connect",

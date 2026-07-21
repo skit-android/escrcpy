@@ -558,6 +558,7 @@
   "grid.nav.recents": "Недавние",
   "grid.status.connecting": "Подключение",
   "grid.status.error": "Переподключение",
+  "grid.reorder.hint": "Перетащите, чтобы изменить порядок",
   "device.list.empty": "Устройства не обнаружены",
   "device.log.name": "Логи",
   "device.mirror.start": "Подключиться",

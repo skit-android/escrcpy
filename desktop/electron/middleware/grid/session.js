@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises'
+import adb from '$electron/middleware/adb/index.js'
 import { extraResolve } from '$electron/process/resources.js'
 import { AdbServerClient } from '@yume-chan/adb'
 import { AdbServerNodeTcpConnector } from '@yume-chan/adb-server-node-tcp'
@@ -106,7 +107,11 @@ export async function startSession(serial, callbacks = {}) {
         maxSize: MAX_SIZE,
         videoBitRate: VIDEO_BIT_RATE,
         maxFps: MAX_FPS,
-        clipboardAutosync: false,
+        // Must be on: the scrcpy client only constructs its clipboard-ack
+        // handler when this is true, and `injectText`'s non-ASCII fallback
+        // (setClipboard) throws without it. We never read the device->host
+        // clipboard stream this also enables, so nothing syncs back to the OS.
+        clipboardAutosync: true,
         scid: ScrcpyInstanceId.random(),
       },
       { version: SERVER_VERSION },
@@ -214,6 +219,43 @@ export async function injectKey(id, keyCode) {
   }
   await session.scrcpy.controller.injectKeyCode({ action: 0, keyCode, repeat: 0, metaState: 0 })
   await session.scrcpy.controller.injectKeyCode({ action: 1, keyCode, repeat: 0, metaState: 0 })
+}
+
+// Inject a single key Down or Up event (as opposed to `injectKey`'s combined
+// press), so the renderer can forward real hardware keyboard events.
+export async function injectKeyCode(id, message) {
+  const session = sessions.get(id)
+  if (!session || session.stopped) {
+    return
+  }
+  await session.scrcpy.controller.injectKeyCode({
+    action: message.action,
+    keyCode: message.keyCode,
+    repeat: message.repeat ?? 0,
+    metaState: message.metaState ?? 0,
+  })
+}
+
+// Printable-ASCII check: the bundled server's `injectText` maps characters to
+// key events via a Latin virtual-keyboard character map, so anything outside
+// this range (Hangul, other CJK, accented Latin, emoji, ...) is silently
+// dropped rather than typed.
+const PRINTABLE_ASCII = /^[\x20-\x7E]*$/
+
+// Inject composed/printable text (typed characters, IME output) in one shot.
+// Non-ASCII text is routed through the device clipboard + auto-paste instead
+// of key-event injection, since the server can't represent it as key events -
+// this is the same workaround scrcpy itself uses for non-Latin scripts.
+export async function injectText(id, text) {
+  const session = sessions.get(id)
+  if (!session || session.stopped) {
+    return
+  }
+  if (PRINTABLE_ASCII.test(text)) {
+    await session.scrcpy.controller.injectText(text)
+    return
+  }
+  await session.scrcpy.controller.setClipboard({ sequence: 0n, paste: true, content: text })
 }
 
 export async function stopSession(id) {

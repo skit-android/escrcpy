@@ -558,6 +558,7 @@
   "grid.nav.recents": "最近",
   "grid.status.connecting": "連線中",
   "grid.status.error": "重新連線中",
+  "grid.reorder.hint": "拖曳以調整順序",
   "device.list.empty": "未偵測到裝置",
   "device.log.name": "執行日誌",
   "device.mirror.start": "開始鏡像",
